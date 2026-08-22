@@ -84,6 +84,14 @@ export function createMarkdownRenderChildWidgetEditorPlugin(mb: ObsMetaBind): Vi
 					return;
 				}
 
+				const renderContextChanged =
+					this.isLivePreview(update.state) !== this.isLivePreview(update.startState) ||
+					Cm6_Util.getCurrentFileFromState(update.state)?.path !==
+						Cm6_Util.getCurrentFileFromState(update.startState)?.path;
+				if (!update.docChanged && !update.viewportChanged && !update.selectionSet && !renderContextChanged) {
+					return;
+				}
+
 				this.updateWidgets(update.view);
 			}
 
@@ -93,123 +101,83 @@ export function createMarkdownRenderChildWidgetEditorPlugin(mb: ObsMetaBind): Vi
 			 * @param view
 			 */
 			updateWidgets(view: EditorView): void {
-				// remove all decorations that are not visible and call unload manually
-				// this is needed because otherwise some decorations are not unloaded correctly
-				this.decorations = this.decorations.update({
-					filter: (decFrom, decTo, decoration) => {
-						const inVisibleRange = summary.anyMatch(view.visibleRanges, range =>
-							Cm6_Util.checkRangeOverlap(decFrom, decTo, range.from, range.to),
+				const visibleRanges = view.visibleRanges;
+				const tree = syntaxTree(view.state);
+				const reusableFieldWidgets = new Map<string, Range<Decoration>>();
+				this.decorations.between(0, view.state.doc.length, (from, to, decoration) => {
+					const spec = decoration.spec as MB_WidgetSpec;
+					if (
+						spec.mb_widgetType === MB_WidgetType.FIELD &&
+						spec.mb_content !== undefined &&
+						spec.mb_filePath !== undefined
+					) {
+						reusableFieldWidgets.set(
+							JSON.stringify([from, to, spec.mb_content, spec.mb_filePath]),
+							decoration.range(from, to),
 						);
-
-						if (inVisibleRange) {
-							return true;
-						} else {
-							const spec = decoration.spec as MB_WidgetSpec;
-
-							spec.mb_unload?.();
-							return false;
-						}
-					},
+					}
 				});
 
-				for (const { from, to } of view.visibleRanges) {
-					syntaxTree(view.state).iterate({
+				const widgets: Range<Decoration>[] = [];
+				const currentFile = Cm6_Util.getCurrentFile(view);
+				for (const { from, to } of visibleRanges) {
+					tree.iterate({
 						from,
 						to,
 						enter: nodeRef => {
 							const node = nodeRef.node;
 							const renderInfo = this.getRenderInfo(view, node);
 
-							if (!renderInfo.data) {
-								// not an inline code block, so we skip it
+							if (!renderInfo.data?.widgetType) {
 								return;
 							}
 
-							if (!renderInfo.data.widgetType) {
-								// an inline code block, but not a field declaration, so we remove all our decorations and skip
-								this.removeDecoration(node);
-								return;
-							}
-
-							// safe cast because we checked for widgetType above
+							// safe cast because the widget type was checked above
 							const renderData: RenderNodeData = renderInfo.data as RenderNodeData;
+							let widget: Range<Decoration> | Range<Decoration>[] | undefined;
 
-							if (renderInfo.shouldRender) {
-								this.removeDecoration(node, MB_WidgetType.FIELD);
-								this.addDecoration(node, view, MB_WidgetType.FIELD, renderData);
-							} else if (renderInfo.shouldHighlight) {
-								this.removeDecoration(node);
-								this.addDecoration(node, view, MB_WidgetType.HIGHLIGHT, renderData);
-							} else {
-								this.removeDecoration(node);
+							if (currentFile && renderInfo.shouldRender) {
+								const key = JSON.stringify([
+									node.from - 1,
+									node.to + 1,
+									renderData.content,
+									currentFile.path,
+								]);
+								const reusableWidget = reusableFieldWidgets.get(key);
+								widget =
+									reusableWidget ??
+									this.renderWidget(node, MB_WidgetType.FIELD, renderData, currentFile);
+							} else if (currentFile && renderInfo.shouldHighlight) {
+								widget = this.renderWidget(node, MB_WidgetType.HIGHLIGHT, renderData, currentFile);
+							}
+
+							if (Array.isArray(widget)) {
+								widgets.push(...widget);
+							} else if (widget) {
+								widgets.push(widget);
 							}
 						},
 					});
 				}
-			}
 
-			/**
-			 * Removes all decorations at a given node.
-			 *
-			 * @param node
-			 * @param widgetTypeToKeep if specified, decorations of this type are kept
-			 */
-			removeDecoration(node: SyntaxNode, widgetTypeToKeep?: MB_WidgetType): void {
 				this.decorations = this.decorations.update({
-					filterFrom: node.from - 1,
-					filterTo: node.to + 1,
-					filter: (_from, _to, decoration) => {
+					filter: (decFrom, decTo, decoration) => {
 						const spec = decoration.spec as MB_WidgetSpec;
-
 						if (!spec.mb_widgetType) {
-							// this is not a widget decoration, so we keep it
 							return true;
 						}
 
-						if (widgetTypeToKeep && spec.mb_widgetType === widgetTypeToKeep) {
-							return true;
+						const inVisibleRange = summary.anyMatch(visibleRanges, range =>
+							Cm6_Util.checkRangeOverlap(decFrom, decTo, range.from, range.to),
+						);
+						if (!inVisibleRange) {
+							spec.mb_unload?.();
 						}
 
 						return false;
 					},
-				});
-			}
-
-			/**
-			 * Adds a widget at a given node if it does not exist yet.
-			 *
-			 * @param node the note where to add the widget
-			 * @param view
-			 * @param content the content of the node
-			 * @param widgetType
-			 * @param inlineFieldType
-			 */
-			addDecoration(node: SyntaxNode, view: EditorView, widgetType: MB_WidgetType, data: RenderNodeData): void {
-				// we check if there already is a decoration of the same type in the range
-				if (Cm6_Util.existsDecorationOfTypeBetween(this.decorations, widgetType, node.from, node.to)) {
-					return;
-				}
-
-				// we can only render widgets if we have a current file
-				const currentFile = Cm6_Util.getCurrentFile(view);
-				if (!currentFile) {
-					return;
-				}
-
-				const newDecoration: Range<Decoration> | Range<Decoration>[] = this.renderWidget(
-					node,
-					widgetType,
-					data,
-					currentFile,
-				);
-				const newDecorations = Array.isArray(newDecoration) ? newDecoration : [newDecoration];
-				// the render widget function might return an empty array if the widget is not supposed to be rendered
-				if (newDecorations.length === 0) {
-					return;
-				}
-
-				this.decorations = this.decorations.update({
-					add: newDecorations,
+					add: widgets,
+					sort: true,
 				});
 			}
 
@@ -288,7 +256,7 @@ export function createMarkdownRenderChildWidgetEditorPlugin(mb: ObsMetaBind): Vi
 			}
 
 			/**
-			 * Completely re-renders all widgets.
+			 * Creates the initial widget decorations for the visible ranges.
 			 *
 			 * @param view
 			 */
@@ -339,14 +307,12 @@ export function createMarkdownRenderChildWidgetEditorPlugin(mb: ObsMetaBind): Vi
 			}
 
 			/**
-			 * Renders a singe widget of the given widget type at a given node.
+			 * Creates decorations for a single inline field node.
 			 * Note that this should only be called on a node that was determined to be truly inline.
 			 *
-			 * @param view
 			 * @param node
-			 * @param inlineFieldType
-			 * @param widgetType
-			 * @param content
+			 * @param type
+			 * @param data
 			 * @param currentFile
 			 */
 			renderWidget(
@@ -366,9 +332,9 @@ export function createMarkdownRenderChildWidgetEditorPlugin(mb: ObsMetaBind): Vi
 					return Decoration.replace({
 						widget: widget,
 						mb_widgetType: MB_WidgetType.FIELD,
-						mb_unload: () => {
-							widget.renderChild?.unload();
-						},
+						mb_unload: () => widget.unloadRenderChild(),
+						mb_content: data.content,
+						mb_filePath: currentFile.path,
 					}).range(node.from - 1, node.to + 1); // since we know that the it's truly inline, we can safely use -1 and +1
 				} else {
 					const highlight = mb.syntaxHighlighting.highlight(data.content, data.widgetType, false);

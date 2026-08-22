@@ -23,7 +23,7 @@ export class MarkdownRenderChildWidget extends WidgetType {
 	}
 
 	eq(other: MarkdownRenderChildWidget): boolean {
-		return other.content === this.content;
+		return other.type === this.type && other.content === this.content && other.filePath === this.filePath;
 	}
 
 	public toDOM(_: EditorView): HTMLElement {
@@ -43,8 +43,18 @@ export class MarkdownRenderChildWidget extends WidgetType {
 		return span;
 	}
 
+	public unloadRenderChild(): void {
+		const renderChild = this.renderChild;
+		if (!renderChild) {
+			return;
+		}
+
+		this.renderChild = undefined;
+		this.parentComponent.removeChild(renderChild);
+	}
+
 	public destroy(dom: HTMLElement): void {
-		this.renderChild?.unload();
+		this.unloadRenderChild();
 		super.destroy(dom);
 	}
 }

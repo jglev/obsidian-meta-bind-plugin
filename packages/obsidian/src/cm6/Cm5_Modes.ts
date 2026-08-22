@@ -26,7 +26,6 @@ export function registerCm5HLModes(mb: ObsMetaBind): void {
 			startState: () => {
 				return {
 					str: undefined,
-					mdrcType: undefined,
 					highlights: undefined,
 					line: 1,
 				};
@@ -50,7 +49,9 @@ export function registerCm5HLModes(mb: ObsMetaBind): void {
 						if (i > 100) break;
 					}
 
-					state.str = lines.filter(x => x.trim() !== '').join('\n');
+					// Preserve blank lines so parsed highlight offsets stay aligned with
+					// the original CodeMirror line numbers.
+					state.str = lines.join('\n');
 
 					const fieldType = mb.api.isInlineFieldDeclarationAndGetType(state.str.trim());
 					if (fieldType === undefined) {

@@ -11,6 +11,8 @@ export enum MB_WidgetType {
 export interface MB_WidgetSpec {
 	mb_widgetType: MB_WidgetType;
 	mb_unload?: () => void;
+	mb_content?: string;
+	mb_filePath?: string;
 }
 
 export class Cm6_Util {
@@ -64,8 +66,17 @@ export class Cm6_Util {
 	 * @param view
 	 */
 	static getCurrentFile(view: EditorView): TFile | null {
+		return Cm6_Util.getCurrentFileFromState(view.state);
+	}
+
+	/**
+	 * Gets the current file from an editor state.
+	 *
+	 * @param state
+	 */
+	static getCurrentFileFromState(state: EditorState): TFile | null {
 		// @ts-ignore some strange private field not being assignable
-		return view.state.field(editorInfoField).file;
+		return state.field(editorInfoField).file;
 	}
 
 	/**
